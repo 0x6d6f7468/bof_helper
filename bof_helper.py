@@ -1,73 +1,113 @@
-import glob
+import re
 import sys
 import requests
 
-def find_declaration(method):
-    results = []
-    dork = " {}".format(method)
-    for filename in glob.iglob('**/*.h', recursive=True):
-        try:
-            with open(filename,"r") as fh:
-                 lines = fh.readlines()
-                 for line in lines:
-                     if dork in line and "WINAPI" in line:
-                        results.append(line.strip())
-        except:
-            pass
-    return results
+def find(method):
+    ms_uri = f"https://docs.microsoft.com/api/search?search={method}&scope=Desktop&locale=en-us&$filter=scopes/any(t: t eq 'Desktop')&facet=category&$top=1"
+    ms_search = requests.get(ms_uri)
+    if ms_search.json()["count"] == 0:
+        print(f"[-] No API search results for {method}. Quitting.")
+        return None
+
+    options = re.search(method, ms_search.text, re.IGNORECASE)
+    if options and options.group(0) != method:
+        print(f"[!] Case of provided method name {method} does not match found method: {options.group(0)}. Using found method...")
+        method = options.group(0)
+
+    doc_uri = ms_search.json()["results"][0]["url"]
+    doc_request = requests.get(doc_uri)
+    doc_content = doc_request.text
+    doc_stripped = re.sub('\r?\n|\t', '', doc_content)
+
+    lib_pattern = re.compile(r'<tr><td><strong>Library</strong></td><td style="text-align: left;">(\w*)')
+    dec_pattern = re.compile(f'<pre><code class="lang-cpp">((.*){method}(.*));</code></pre><h2 id="parameters">Parameters</h2>')
+
+    try:
+        library = re.search(lib_pattern, doc_stripped).group(1)
+
+    except AttributeError:
+        print("[-] Unable to parse library from webpage. Searching for relevant hyperlink...")
+        lib_url = None
+
+        for line in doc_content.split("\n"):
+
+            if method in line:
+                url_pattern = re.compile(f'<a href="(.*)" data-linktype="absolute-path">{method}</a>')
+
+                try:
+                    lib_url = re.search(url_pattern, line).group(1)
+                except AttributeError:
+                    print("[-] No hyperlinks found. Quitting.")
+                    return None
+
+                print(f"[+] Relevant hyperlink found pointing to {lib_url}! Parsing...")
+                break
+
+        if not lib_url:
+            print("[-] No relevant hyperlink found! Quitting.")
+            return None
+
+        doc_request = requests.get(f"https://docs.microsoft.com{lib_url}")
+        doc_content = doc_request.text
+        doc_stripped = re.sub('\r?\n|\t', '', doc_content)
+
+    finally:
+        print("[+] All parsing successful. Continuing...")
+
+    doc_content = ' '.join(doc_stripped.split())
+    library = re.search(lib_pattern, doc_content).group(1)
+
+    declaration = re.search(dec_pattern, doc_content).group(1)
+    declaration = re.sub(r'\[in\]|\[out\]', '', declaration)
+    declaration = ' '.join(declaration.split())
+    declaration = declaration.replace('( ', '(')
+
+    return (method, library, declaration)
 
 
-def find_library(method):
-        library = 0
-        try:
-            ms_uri="https://docs.microsoft.com/api/search?search={}&scope=Desktop&locale=en-us&scoringprofile=search_for_en_us_a_b_test&%24filter=scopes%2Fany(t%3A%20t%20eq%20%27Desktop%27)&facet=category&%24top=1".format(method)
-            ms_search = requests.get(ms_uri)
-            doc_uri = ms_search.json()["results"][0]["url"]
-            doc_request = requests.get(doc_uri)
-            doc_content = doc_request.text
 
-            lines = doc_content.split("\n")
-            i = 0
-            for line in lines:
-                    if "<td><strong>Library</strong></td>" in line:
-                            lib_tmp = lines[i+1].replace("<td style=\"text-align: left;\">","").replace("</td>","")
-                            if ".lib" in lib_tmp:
-                                    library = lib_tmp.replace(".lib","")
-                    i+=1
-        except:
-            pass
-        return library
+def main():
+    # banner: source: ascii.co.uk/text
+    #         font: Ansi Shadow
+    print("""
+    ██████╗  ██████╗ ███████╗    ██╗  ██╗███████╗██╗     ██████╗ ███████╗██████╗ 
+    ██╔══██╗██╔═══██╗██╔════╝    ██║  ██║██╔════╝██║     ██╔══██╗██╔════╝██╔══██╗
+    ██████╔╝██║   ██║█████╗      ███████║█████╗  ██║     ██████╔╝█████╗  ██████╔╝
+    ██╔══██╗██║   ██║██╔══╝      ██╔══██║██╔══╝  ██║     ██╔═══╝ ██╔══╝  ██╔══██╗
+    ██████╔╝╚██████╔╝██║         ██║  ██║███████╗███████╗██║     ███████╗██║  ██║
+    ╚═════╝  ╚═════╝ ╚═╝         ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝
+    [===============================================================]
+    [=  Original BOF Helper code by @dtmsecurity                   =]
+    [=  Cleaned, modified, and fixed BOF Helper code by moth@bhis  =]
+    [===============================================================]
+    """)
+
+    if len(sys.argv) != 2:
+        print(f"python3 {sys.argv[0]} <API Method>")
+        return
+
+    method = sys.argv[1]
+
+    lib_dec = find(method)
+
+    print()
+
+    if not lib_dec:
+        print(f"[-] Error: Unable to find reference to {method}")
+        return
+
+    method = lib_dec[0]
+
+    if lib_dec[1]:
+        print(f"[Library]     Function {method} is probably in library {lib_dec[1]}")
+
+    if lib_dec[2]:
+        chunks = lib_dec[2].partition(method)
+        rtype = chunks[0]
+        signature = ''.join(chunks[1:])
+        print(f"[Declaration] DECLSPEC_IMPORT {rtype}{lib_dec[1].upper()}${signature}")
 
 
-print("██████╗  ██████╗ ███████╗ ");
-print("██╔══██╗██╔═══██╗██╔════╝ ");
-print("██████╔╝██║   ██║█████╗   ");
-print("██╔══██╗██║   ██║██╔══╝   ");
-print("██████╔╝╚██████╔╝██║      ");
-print("╚═════╝  ╚═════╝ ╚═╝      ");
-print("BOF Helper by @dtmsecurity ");
-print("")
 
-if len(sys.argv) != 2:
-    print("python3 {} <API Method>".format(sys.argv[0]))
-    exit()
-
-method = sys.argv[1]
-
-library = find_library(method)
-
-if library != 0:
-        print("[Library] {} is probably in {}\n".format(method,library))
-
-declarations = find_declaration(method)
-
-for declaration in declarations:
-    print("[Declaration] {}".format(declaration))
-
-print("")
-
-if library != 0:
-        print("[BOF Helper]")
-        for declaration in declarations:
-            print("DECLSPEC_IMPORT {}".format(declaration.replace(method, "{}${}".format(library.upper(),method))))
-
+if __name__ == "__main__":
+    main()
