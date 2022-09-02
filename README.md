@@ -28,7 +28,7 @@ Note: The Microsoft endpoint and dorks used are liable to change which may break
 
 **Example**
 
-```bash
+```
 $ python3 bof_helper.py DsGetDcNameA
 
     ██████╗  ██████╗ ███████╗    ██╗  ██╗███████╗██╗     ██████╗ ███████╗██████╗ 
